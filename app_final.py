@@ -402,7 +402,7 @@ with tab2:
 if __name__ == "__main__":
     import subprocess, sys, re, time
 
-    print("\n🔧 Launching Streamlit...\n")
+    print("\n Launching Streamlit...\n")
 
     # Start Streamlit as a subprocess
     process = subprocess.Popen(
