@@ -157,7 +157,7 @@ sensor_list = sorted(locations["Objectnummer"].unique())
 selected_sensors = st.sidebar.multiselect("Select Sensors", sensor_list, default=sensor_list[:5])
 
 # Tabs
-tab1, tab2 = st.tabs(["Time Series", "Vector Map"])
+tab1, tab2 = st.tabs([" Time Series", " Vector Map"])
 
 # ---------------------------------------------------------------
 # TAB 1:  TIME SERIES
@@ -215,75 +215,218 @@ with tab1:
                       title="Crowd Levels Over Time (Predicted)")
         st.plotly_chart(fig, use_container_width=True)
 
-# ---------------------------------------------------------------
-# TAB 2:  VECTOR MAP
-# ---------------------------------------------------------------
 
+
+# ---------------------------------------------------------------
+# TAB 2:  VECTOR MAP (length ∝ value, arrowheads, warnings + P90)
+# ---------------------------------------------------------------
 with tab2:
-    st.header("🗺️ Crowd Movement Vector Map")
+    st.header("Crowd Movement Vector Map")
 
-    # Filter predicted data by selected date + sensors
+    # --- controls ---
+    colA, colB, colC, colD = st.columns(4)
+    with colA:
+        scale = st.slider("Arrow Length Scale", 1, 20, 5, help="Multiplies arrow length (bigger = longer)")
+    with colB:
+        show_values = st.toggle("Show values at arrow tips", value=True)
+    with colC:
+        # keep threshold in session so the 'Suggest' button can set it
+        if "warn_threshold" not in st.session_state:
+            st.session_state.warn_threshold = 200
+        _ = st.empty()  # spacer
+        thr = st.number_input("Warn if sensor ≥ people", min_value=1, value=st.session_state.warn_threshold, step=10)
+    with colD:
+        if st.button("Suggest (P90)"):
+            # compute P90 of total people per sensor for selected date
+            today = vec_long[vec_long["timestamp"].dt.date == date_sel]
+            if today.empty:
+                st.info("No data today to suggest a threshold.")
+            else:
+                p90 = (
+                    today.groupby(["timestamp", "Objectnummer"])["value"].sum()
+                    .groupby(level=0).sum()  # total across sensors each timestamp
+                ).quantile(0.90)
+                # If total per timestamp is p90, per-sensor threshold is rougher.
+                # Use per-sensor p90 for this date instead:
+                per_sensor_p90 = (
+                    today.groupby(["timestamp", "Objectnummer"])["value"].sum()
+                    .groupby("Objectnummer").quantile(0.90).median()
+                )
+                # prefer per-sensor p90 (median across sensors) if it yields a sensible number
+                suggested = int(max(1, round(per_sensor_p90))) if not np.isnan(per_sensor_p90) else int(max(1, round(p90/5)))
+                st.session_state.warn_threshold = suggested
+                st.success(f"Suggested threshold set to {suggested}")
+        # Read possibly-updated threshold
+        warn_threshold = st.session_state.get("warn_threshold", 200)
+        # If user typed a new number, keep that as the source of truth
+        if thr != warn_threshold:
+            warn_threshold = thr
+            st.session_state.warn_threshold = thr
+
+    # --- filter data by date and (optionally) sensors ---
     vec_day = vec_long[vec_long["timestamp"].dt.date == date_sel]
-
     if selected_sensors:
         vec_day = vec_day[vec_day["Objectnummer"].isin(selected_sensors)]
 
     times_available = sorted(vec_day["timestamp"].unique())
-
     if not times_available:
         st.warning("No predicted vector data for this date & sensor selection.")
         st.stop()
 
-    # Timestamp selector
+    # time slider
     timestamp_sel = st.select_slider(
-        "Select Time",
+        "Select time",
         options=times_available,
-        value=times_available[len(times_available) // 2],
+        value=times_available[len(times_available)//2],
         format_func=lambda t: t.strftime("%H:%M")
     )
 
-    scale = st.slider("Arrow Length Scale", 1, 15, 5)
-
-    # Build vector frame
-    frame = vec_day[vec_day["timestamp"] == timestamp_sel]
-    merged = frame.merge(locations, on="Objectnummer", how="inner")
+    # slice time and join coordinates
+    frame = vec_day[vec_day["timestamp"] == timestamp_sel].copy()
+    merged = frame.merge(locations, on="Objectnummer", how="inner").dropna(subset=["Lat","Long"])
 
     if merged.empty:
         st.warning("No matching sensor locations for this selection.")
         st.stop()
 
-    # Compute arrow direction and endpoints
-    merged["dx"] = scale * np.sin(np.radians(merged["angle_deg"]))
-    merged["dy"] = scale * np.cos(np.radians(merged["angle_deg"]))
+    # ---- totals per sensor at this time (for warning + labels) ----
+    totals = merged.groupby("Objectnummer", as_index=False)["value"].sum().rename(columns={"value":"Persons"})
+    over = totals[totals["Persons"] >= warn_threshold]
+    if not over.empty:
+        sample = ", ".join(over["Objectnummer"].astype(str).tolist()[:8])
+        st.error(
+            f"⚠️ Crowd alert at {timestamp_sel:%H:%M}: "
+            f"{len(over)} sensor(s) ≥ {warn_threshold} people. {('e.g., ' + sample) if sample else ''}"
+        )
 
-    # Plot with Plotly
+    # merge totals back for convenient access
+    merged = merged.merge(totals, on="Objectnummer", how="left")
+
+    # ---- geometry: arrow length ∝ value, with arrowheads ----
+    # 0° = north (up). Use cos for northing (dy), sin for easting (dx).
+    # Length units = scale * value; then convert to map "degrees" with DEG_FACTOR.
+    merged["dx_units"] = scale * merged["value"] * np.sin(np.radians(merged["angle_deg"]))
+    merged["dy_units"] = scale * merged["value"] * np.cos(np.radians(merged["angle_deg"]))
+
+    DEG_FACTOR = 0.0001  # tune alongside 'scale'
+    merged["dx_deg"] = merged["dx_units"] * DEG_FACTOR
+    merged["dy_deg"] = merged["dy_units"] * DEG_FACTOR
+
+    merged["lat_end"] = merged["Lat"]  + merged["dy_deg"]
+    merged["lon_end"] = merged["Long"] + merged["dx_deg"]
+
+    # arrowhead geometry (two short lines from the tip)
+    def _rotate(dx, dy, degrees):
+        rad = np.radians(degrees)
+        return dx*np.cos(rad) - dy*np.sin(rad), dx*np.sin(rad) + dy*np.cos(rad)
+
+    HEAD_ANGLE = 25       # degrees from shaft
+    HEAD_FRACTION = 0.35  # head segment length as fraction of shaft length
+
+    hx1, hy1 = _rotate(merged["dx_deg"], merged["dy_deg"], +HEAD_ANGLE)
+    hx2, hy2 = _rotate(merged["dx_deg"], merged["dy_deg"], -HEAD_ANGLE)
+    merged["hx1_deg"] = hx1 * HEAD_FRACTION
+    merged["hy1_deg"] = hy1 * HEAD_FRACTION
+    merged["hx2_deg"] = hx2 * HEAD_FRACTION
+    merged["hy2_deg"] = hy2 * HEAD_FRACTION
+
+    # ---- draw map ----
     fig = go.Figure()
 
+    # base sensors
     fig.add_trace(go.Scattermapbox(
         lat=merged["Lat"],
         lon=merged["Long"],
         mode="markers",
-        marker=dict(size=8, color="red"),
+        marker=dict(size=9, color="#d62728"),  # red
         text=merged["Objectnummer"],
-        hoverinfo="text"
+        hovertemplate="<b>%{text}</b><extra></extra>",
+        name="Sensor"
     ))
 
-    # Add arrows
-    for _, row in merged.iterrows():
+    # shafts + heads (orange)
+    for _, r in merged.iterrows():
+        # shaft
         fig.add_trace(go.Scattermapbox(
-            lat=[row["Lat"], row["Lat"] + row["dy"] * 0.0001],
-            lon=[row["Long"], row["Long"] + row["dx"] * 0.0001],
+            lat=[r["Lat"], r["lat_end"]],
+            lon=[r["Long"], r["lon_end"]],
             mode="lines",
-            line=dict(width=3, color="orange")
+            line=dict(width=max(1, min(7, 1 + 0.4*float(r["value"]))), color="#ff7f0e"),
+            hovertemplate=(f"<b>{r['Objectnummer']}</b><br>"
+                           f"value: {float(r['value']):.1f}<br>"
+                           f"angle: {float(r['angle_deg']):.0f}°<extra></extra>"),
+            showlegend=False
+        ))
+        # head side 1
+        fig.add_trace(go.Scattermapbox(
+            lat=[r["lat_end"], r["lat_end"] - r["hy1_deg"]],
+            lon=[r["lon_end"], r["lon_end"] - r["hx1_deg"]],
+            mode="lines",
+            line=dict(width=max(1, min(6, 0.8 + 0.3*float(r["value"]))), color="#ff7f0e"),
+            hoverinfo="skip",
+            showlegend=False
+        ))
+        # head side 2
+        fig.add_trace(go.Scattermapbox(
+            lat=[r["lat_end"], r["lat_end"] - r["hy2_deg"]],
+            lon=[r["lon_end"], r["lon_end"] - r["hx2_deg"]],
+            mode="lines",
+            line=dict(width=max(1, min(6, 0.8 + 0.3*float(r["value"]))), color="#ff7f0e"),
+            hoverinfo="skip",
+            showlegend=False
+        ))
+
+    # optional value labels at tip
+    if show_values:
+        fig.add_trace(go.Scattermapbox(
+            lat=merged["lat_end"],
+            lon=merged["lon_end"],
+            mode="text",
+            text=[f"{int(v)}" for v in merged["value"]],
+            textfont=dict(size=11, color="#111"),
+            hoverinfo="skip",
+            showlegend=False
         ))
 
     fig.update_layout(
         mapbox_style="carto-positron",
-        mapbox_center={"lat": merged["Lat"].mean(), "lon": merged["Long"].mean()},
+        mapbox_center={"lat": float(merged["Lat"].mean()), "lon": float(merged["Long"].mean())},
         mapbox_zoom=12,
-        margin={"r":0, "t":0, "l":0, "b":0}
+        margin={"r":0, "t":6, "l":0, "b":0},
+        height=700,
+        title=f"Vectors at {timestamp_sel:%Y-%m-%d %H:%M} — length ∝ people"
     )
 
     st.plotly_chart(fig, use_container_width=True)
+
+if __name__ == "__main__":
+    import subprocess, sys, re, time
+
+    print("\n🔧 Launching Streamlit...\n")
+
+    # Start Streamlit as a subprocess
+    process = subprocess.Popen(
+        [sys.executable, "-m", "streamlit", "run", "app_final.py", "--server.headless", "true"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+
+    url = None
+    # Read output until a URL is detected
+    for line in process.stdout:
+        print(line, end="")  # also print Streamlit logs to terminal
+        match = re.search(r"(http://localhost:\d+)", line)
+        if match:
+            url = match.group(1)
+            break
+
+    time.sleep(1)
+
+    if url:
+        print(f"\n Streamlit is running here:\n\n{url}\n")
+        print(" Copy & paste into your browser manually.\n")
+    else:
+        print("\n Could not detect URL automatically. Scroll up for Streamlit logs.\n")
 
 
