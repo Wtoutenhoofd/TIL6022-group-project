@@ -27,7 +27,7 @@ def require_file(path: str):
     try:
         open(path, "r").close()
     except:
-        st.error(f"❌ Required file not found: {path}")
+        st.error(f" Required file not found: {path}")
         st.stop()
 
 require_file(LOC_FILE)
@@ -160,7 +160,7 @@ selected_sensors = st.sidebar.multiselect("Select Sensors", sensor_list, default
 tab1, tab2 = st.tabs([" Time Series", " Vector Map"])
 
 # ---------------------------------------------------------------
-# TAB 1: 📈 TIME SERIES
+# TAB 1:  TIME SERIES
 # ---------------------------------------------------------------
 
 with tab1:
@@ -218,7 +218,7 @@ with tab1:
 
 
 # ---------------------------------------------------------------
-# TAB 2: 🗺️ VECTOR MAP (length ∝ value, arrowheads, warnings + P90)
+# TAB 2:  VECTOR MAP (length ∝ value, arrowheads, warnings + P90)
 # ---------------------------------------------------------------
 with tab2:
     st.header("Crowd Movement Vector Map")
