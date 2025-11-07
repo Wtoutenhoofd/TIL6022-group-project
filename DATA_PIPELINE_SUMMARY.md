@@ -40,13 +40,13 @@
 4. **Sensor locations**: `sensor-location.xlsx - Sheet1.csv` (metadata)
 
 ### Processing Steps (7 Steps)
-1. ✅ Load all raw data files
-2. ✅ Process sensor location metadata
-3. ✅ Normalize sensor measurements by effective width
-4. ✅ Process and resample weather data (10-min → 3-min)
-5. ✅ Process and aggregate vessel positions
-6. ✅ Merge all data sources on timestamp
-7. ✅ Calculate spatial features (vessel-sensor distances with weighting)
+1. Load all raw data files
+2. Process sensor location metadata
+3. Normalize sensor measurements by effective width
+4. Process and resample weather data (10-min → 3-min)
+5. Process and aggregate vessel positions
+6. Merge all data sources on timestamp
+7. Calculate spatial features (vessel-sensor distances with weighting)
 
 ### Output
 - **File**: `processed_data.csv` (or `agg_df` DataFrame in notebook)
