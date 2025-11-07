@@ -1,0 +1,450 @@
+# ============================================================================
+# DATA PIPELINE FOR PROJECT TEMPLATE
+# Copy these cells into Section 4 of project_template.ipynb
+# ============================================================================
+
+# CELL 1: Import Libraries
+# --------------------------------------------------------------------------------
+"""
+Import required libraries for data processing and feature engineering.
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore')
+
+print("✓ Libraries imported successfully")
+
+# CELL 2: Configuration and File Paths
+# --------------------------------------------------------------------------------
+"""
+Define file paths and configuration parameters for the data pipeline.
+"""
+
+# File paths (relative to project root)
+PATH_SENSORS = "data_pipeline/sensordata_SAIL2025.csv"
+PATH_WEATHER = "data_pipeline/SAIL_Amsterdam_10min_Weather_2025-08-20_to_2025-08-24_FIXED.csv"
+PATH_VESSELS = "data_pipeline/vessels_data.parquet"
+PATH_SENSOR_LOC = "sensor-location.xlsx - Sheet1.csv"
+
+# Train/Test split timestamp
+SPLIT_TIME = pd.Timestamp("2025-08-24 00:00:00+02:00")
+
+# Vessel filtering: only large vessels (>100m)
+MIN_VESSEL_LENGTH = 10000  # in cm (100m)
+
+# Distance threshold for vessel influence
+MAX_DISTANCE = 1000  # meters
+
+print("=" * 70)
+print("SAIL 2025 CROWD PREDICTION - DATA PIPELINE")
+print("=" * 70)
+print("\n✓ Configuration loaded")
+
+# CELL 3: Load Raw Data Files
+# --------------------------------------------------------------------------------
+"""
+Load all data sources:
+1. Sensor measurements (3-minute intervals)
+2. Weather data (10-minute intervals)
+3. Vessel positions (real-time tracking)
+4. Sensor location metadata
+"""
+
+print("\n[STEP 1/7] Loading raw data files...")
+
+# Load sensor data
+print(f"  • Loading sensor measurements...")
+sensors = pd.read_csv(PATH_SENSORS, parse_dates=["timestamp"])
+print(f"    → Shape: {sensors.shape}, Columns: {len(sensors.columns)}")
+
+# Load weather data
+print(f"  • Loading weather data...")
+weather = pd.read_csv(PATH_WEATHER)
+print(f"    → Shape: {weather.shape}")
+
+# Load vessel data
+print(f"  • Loading vessel positions...")
+vessels = pd.read_parquet(PATH_VESSELS)
+vessels = vessels.rename(columns={"upload-timestamp": "timestamp"})
+if "stale_since" in vessels.columns:
+    vessels = vessels.drop(columns=["stale_since"])
+print(f"    → Shape: {vessels.shape}")
+
+# Load sensor locations
+print(f"  • Loading sensor locations...")
+sensors_location = pd.read_csv(PATH_SENSOR_LOC)
+sensors_location = sensors_location.rename(columns={"Objectnummer": "sensor_id"})
+print(f"    → Shape: {sensors_location.shape}")
+
+print("\n✓ All data files loaded successfully")
+
+# Display sample of sensor data
+print("\n📊 Sample of sensor data:")
+display(sensors.head(3))
+
+# CELL 4: Process Sensor Location Metadata
+# --------------------------------------------------------------------------------
+"""
+Process sensor location data:
+- Fix decimal notation (comma → dot)
+- Parse latitude/longitude coordinates
+- Create lookup dictionary for effective widths
+"""
+
+print("\n[STEP 2/7] Processing sensor location metadata...")
+
+# Fix decimal notation (comma → dot)
+sensors_location["Effectieve breedte"] = (
+    sensors_location["Effectieve breedte"]
+    .astype(str)
+    .str.replace(",", ".")
+    .astype(float)
+)
+
+# Parse lat/lon coordinates
+sensors_location[["lat", "lon"]] = (
+    sensors_location["Lat/Long"]
+    .str.replace(" ", "")
+    .str.split(",", expand=True)
+    .astype(float)
+)
+
+print(f"  • Parsed {len(sensors_location)} sensor locations")
+print(f"\n✓ Sensor metadata processed")
+
+# Display sensor locations
+print("\n📍 Sensor locations:")
+display(sensors_location[["sensor_id", "lat", "lon", "Effectieve breedte"]].head())
+
+# CELL 5: Normalize Sensor Measurements
+# --------------------------------------------------------------------------------
+"""
+Normalize sensor values by dividing by effective width.
+This converts raw counts to standardized flow measurements: (people/meter)/minute
+"""
+
+print("\n[STEP 3/7] Normalizing sensor measurements by effective width...")
+
+# Sensor prefixes to identify measurement columns
+sensor_prefixes = ("CMSA-", "GACM-", "GASA-", "GVCV-")
+
+# Create lookup dictionary: sensor_id → effective_width
+width_lookup = sensors_location.set_index("sensor_id")["Effectieve breedte"].to_dict()
+
+# Normalize each sensor column
+normalized_count = 0
+for col in sensors.columns:
+    if "_" in col:  # Sensor columns have format: SENSOR-ID_ANGLE
+        sensor_id = col.split("_")[0]
+        if sensor_id in width_lookup:
+            sensors[col] = sensors[col] / width_lookup[sensor_id]
+            normalized_count += 1
+
+print(f"  • Normalized {normalized_count} sensor measurement columns")
+print(f"\n✓ Sensor normalization complete")
+
+# Show example of normalization
+print("\n📊 Sample of normalized sensor data:")
+display(sensors.head(3))
+
+# CELL 6: Process Weather Data
+# --------------------------------------------------------------------------------
+"""
+Process weather data from KNMI:
+- Fix datetime format (hour 24 → 00)
+- Convert to UTC datetime
+- Resample from 10-minute to 3-minute intervals
+"""
+
+print("\n[STEP 4/7] Processing weather data...")
+
+# Fix datetime format (replace hour 24 with 00)
+weather["DateTime"] = weather["DateTime"].str.replace(" 24:", " 00:", regex=False)
+
+# Convert to UTC datetime
+weather["DateTime"] = pd.to_datetime(weather["DateTime"], format="%Y%m%d %H:%M")
+weather = weather.set_index("DateTime")
+
+# Resample from 10-minute to 3-minute intervals
+weather_3min = weather.resample("3min").nearest()
+weather_3min = weather_3min.reset_index()
+
+print(f"  • Resampled weather data from 10-min to 3-min intervals")
+print(f"  • Weather features: {', '.join(weather_3min.columns[1:])}")
+print(f"\n✓ Weather processing complete")
+
+# Display weather data
+print("\n🌤️ Sample of weather data (3-min intervals):")
+display(weather_3min.head())
+
+# CELL 7: Process Vessel Position Data
+# --------------------------------------------------------------------------------
+"""
+Process vessel tracking data:
+- Convert to UTC and floor to 3-minute intervals
+- Aggregate positions per vessel per interval
+- Filter to large vessels only (>100m)
+"""
+
+print("\n[STEP 5/7] Processing vessel position data...")
+
+# Convert to UTC datetime and floor to 3-minute intervals
+vessels["timestamp"] = pd.to_datetime(vessels["timestamp"], utc=True, errors="coerce")
+vessels["timestamp"] = vessels["timestamp"].dt.floor("3min")
+
+# Aggregate vessel positions per 3-minute interval
+vessels = (
+    vessels.groupby(["timestamp", "imo-number"], as_index=False)
+    .agg({
+        "lat": "mean",
+        "lon": "mean",
+        "length": "first"
+    })
+    .dropna(subset=["timestamp", "imo-number", "lat", "lon", "length"])
+)
+
+# Filter: only large vessels (>100m)
+vessels = vessels[vessels["length"] > MIN_VESSEL_LENGTH]
+
+print(f"  • Aggregated vessel positions to 3-min intervals")
+print(f"  • Filtered to vessels > {MIN_VESSEL_LENGTH/100:.0f}m: {vessels['imo-number'].nunique()} unique vessels")
+print(f"\n✓ Vessel processing complete")
+
+# Display vessel data
+print("\n🚢 Sample of vessel data:")
+display(vessels.head())
+
+# CELL 8: Merge All Data Sources
+# --------------------------------------------------------------------------------
+"""
+Merge all data sources on timestamp:
+1. Sensors + Vessels (inner join)
+2. Add Weather data (left join)
+"""
+
+print("\n[STEP 6/7] Merging all data sources...")
+
+# Ensure datetime compatibility
+vessels["timestamp"] = pd.to_datetime(vessels["timestamp"], utc=True)
+sensors["timestamp"] = pd.to_datetime(sensors["timestamp"], utc=True)
+weather_3min["DateTime"] = pd.to_datetime(weather_3min["DateTime"], utc=True)
+
+# Merge sensors + vessels
+combined = sensors.merge(vessels, on="timestamp", how="inner")
+print(f"  • Merged sensors + vessels: {combined.shape}")
+
+# Merge with weather
+combined = combined.merge(
+    weather_3min.rename(columns={"DateTime": "timestamp"})[
+        ["timestamp", "Temperature_°C", "Humidity_%", "Rain_mm"]
+    ],
+    on="timestamp",
+    how="left"
+)
+print(f"  • Added weather data: {combined.shape}")
+print(f"\n✓ Data merge complete")
+
+# Display merged data
+print("\n📊 Sample of merged data:")
+display(combined.head(3))
+
+# CELL 9: Calculate Vessel-Sensor Distances (Haversine Formula)
+# --------------------------------------------------------------------------------
+"""
+Calculate spatial features:
+- Distance from each vessel to each sensor using Haversine formula
+- Creates distance features for all sensors
+- Caps distances at 1000m (no influence beyond that)
+"""
+
+print("\n[STEP 7/7] Computing spatial features (vessel-sensor distances)...")
+
+# Haversine formula for accurate distance on Earth's surface
+def haversine(lat1, lon1, lat2, lon2):
+    """
+    Calculate great-circle distance between two points on Earth.
+    Returns distance in meters.
+    """
+    R = 6371000  # Earth radius in meters
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
+    return 2 * R * np.arcsin(np.sqrt(a))
+
+# Calculate distance from each vessel to each sensor
+print(f"  • Computing distances for {len(sensors_location)} sensors...")
+for _, sensor in sensors_location.iterrows():
+    sensor_id = sensor["sensor_id"]
+    s_lat = sensor["lat"]
+    s_lon = sensor["lon"]
+    
+    dist_col = f"dist_{sensor_id}"
+    combined[dist_col] = haversine(s_lat, s_lon, combined["lat"], combined["lon"])
+
+print(f"  • Created {len(sensors_location)} distance features")
+
+# Cap all distances at MAX_DISTANCE (no influence beyond that)
+for col in [c for c in combined.columns if c.startswith("dist_")]:
+    combined[col] = combined[col].clip(0, MAX_DISTANCE)
+
+print(f"  • Applied distance cap at {MAX_DISTANCE}m")
+print(f"\n✓ Distance calculation complete")
+
+# CELL 10: Weighted Aggregation Per Timestamp
+# --------------------------------------------------------------------------------
+"""
+Aggregate vessel influences per timestamp using inverse-distance weighting:
+- Closer vessels have more influence (inverse distance weight)
+- Larger vessels have more influence (weighted by length)
+- Creates final feature set for machine learning
+"""
+
+print(f"\n  • Aggregating vessel influences per timestamp...")
+print(f"    This may take a few minutes...")
+
+agg_rows = []
+total_timestamps = len(combined["timestamp"].unique())
+processed = 0
+
+for ts, group in combined.groupby("timestamp"):
+    # Compute inverse-distance weights per vessel (closer = more influence)
+    dist_cols = [c for c in group.columns if c.startswith("dist_")]
+    weights = 1 / (group[dist_cols].clip(lower=1))  # avoid division by zero
+    
+    temp = {
+        "timestamp": ts,
+        # Weather features (same for all vessels at this timestamp)
+        "Temperature_°C": group["Temperature_°C"].iloc[0],
+        "Humidity_%": group["Humidity_%"].iloc[0],
+        "Rain_mm": group["Rain_mm"].iloc[0],
+    }
+    
+    # Weighted vessel length (larger vessels = more influence)
+    temp["length_weighted"] = np.average(group["length"], weights=weights.mean(axis=1))
+    
+    # Weighted mean distances (closer vessels have more influence)
+    for col in dist_cols:
+        temp[f"{col}_weighted"] = np.average(group[col], weights=1 / (group[col] + 1))
+    
+    # Sensor target values (same for all vessels per timestamp)
+    for target_col in [c for c in combined.columns if c.startswith(sensor_prefixes)]:
+        temp[target_col] = group[target_col].iloc[0]
+    
+    agg_rows.append(temp)
+    
+    # Progress indicator
+    processed += 1
+    if processed % 100 == 0:
+        print(f"    Progress: {processed}/{total_timestamps} timestamps processed")
+
+agg_df = pd.DataFrame(agg_rows)
+print(f"\n  • Aggregated to {len(agg_df)} timestamps")
+
+# Remove rows with missing values
+initial_rows = len(agg_df)
+agg_df = agg_df.dropna()
+removed_rows = initial_rows - len(agg_df)
+
+if removed_rows > 0:
+    print(f"  • Removed {removed_rows} rows with missing values")
+
+print(f"\n✓ Spatial feature engineering complete")
+
+# CELL 11: Data Pipeline Summary
+# --------------------------------------------------------------------------------
+"""
+Display summary of processed data and train/test split information.
+"""
+
+print("\n" + "=" * 70)
+print("DATA PIPELINE SUMMARY")
+print("=" * 70)
+
+# Identify feature and target columns
+feature_cols = (
+    ["Temperature_°C", "Humidity_%", "Rain_mm", "length_weighted"]
+    + [c for c in agg_df.columns if c.startswith("dist_")]
+)
+target_cols = [c for c in agg_df.columns if c.startswith(sensor_prefixes)]
+
+print(f"\n📊 Final Dataset Shape: {agg_df.shape}")
+print(f"   • Timestamps: {len(agg_df)}")
+print(f"   • Features: {len(feature_cols)}")
+print(f"   • Targets (sensors): {len(target_cols)}")
+
+# Train/Test split info
+train_mask = agg_df["timestamp"] < SPLIT_TIME
+test_mask = ~train_mask
+
+print(f"\n📅 Train/Test Split:")
+print(f"   • Training data: {train_mask.sum()} timestamps (before {SPLIT_TIME.date()})")
+print(f"   • Test data: {test_mask.sum()} timestamps (on {SPLIT_TIME.date()})")
+
+print("\n✅ DATA PIPELINE COMPLETED SUCCESSFULLY!")
+print("=" * 70)
+
+# Display final dataset
+print("\n📊 Final processed dataset:")
+display(agg_df.head(10))
+
+# CELL 12: Prepare Data for Machine Learning Models
+# --------------------------------------------------------------------------------
+"""
+Split data into training and test sets, and prepare feature/target matrices.
+"""
+
+print("\n" + "=" * 70)
+print("PREPARING DATA FOR MACHINE LEARNING")
+print("=" * 70)
+
+# Split the dataset
+train_data = agg_df[agg_df["timestamp"] < SPLIT_TIME]
+test_data  = agg_df[agg_df["timestamp"] >= SPLIT_TIME]
+
+# Prepare feature and target matrices
+X_train = train_data[feature_cols].values
+X_test  = test_data[feature_cols].values
+y_train = train_data[target_cols].values
+y_test  = test_data[target_cols].values
+
+print(f"\n📊 Training Set:")
+print(f"   • X_train shape: {X_train.shape}")
+print(f"   • y_train shape: {y_train.shape}")
+
+print(f"\n📊 Test Set:")
+print(f"   • X_test shape: {X_test.shape}")
+print(f"   • y_test shape: {y_test.shape}")
+
+print(f"\n✓ Data ready for model training!")
+print("\nYou can now proceed to train Ridge and XGBoost models.")
+
+# CELL 13: Display Feature and Target Information
+# --------------------------------------------------------------------------------
+"""
+Display detailed information about features and targets.
+"""
+
+print("\n" + "=" * 70)
+print("FEATURE AND TARGET INFORMATION")
+print("=" * 70)
+
+print(f"\n🎯 Weather Features (4):")
+weather_features = ["Temperature_°C", "Humidity_%", "Rain_mm"]
+for f in weather_features:
+    print(f"   • {f}")
+
+print(f"\n🚢 Vessel Proximity Features (1 + {len(sensors_location)} sensors):")
+print(f"   • length_weighted (weighted average vessel length)")
+print(f"   • dist_[SENSOR-ID]_weighted (weighted distance to each sensor)")
+
+print(f"\n📍 Target Sensors ({len(target_cols)}):")
+for i, target in enumerate(target_cols[:10], 1):
+    print(f"   {i}. {target}")
+if len(target_cols) > 10:
+    print(f"   ... and {len(target_cols) - 10} more sensors")
+
+print("\n" + "=" * 70)
