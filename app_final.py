@@ -1,8 +1,3 @@
-# ---------------------------------------------------------------
-# SAIL CROWD DASHBOARD (Version B + Vector Map Integration)
-# PART 1/2 — Imports, Loaders, Sidebar, and Tabs Setup
-# ---------------------------------------------------------------
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -13,14 +8,10 @@ from urllib.request import urlopen
 import re
 from datetime import time
 
-# ---------------------------------------------------------------
-# CONFIGURATION
-# ---------------------------------------------------------------
 
-# File names EXACT as confirmed by you
 LOC_FILE = "sensor-location.xlsx - Sheet1.csv"          # Sensor coordinates
 PRED_FILE = "predicted_sensor_values_3min.csv"          # Predicted sensor values (with angles)
-REAL_FILE = None  # We will auto-detect real sensor data file later
+REAL_FILE = None 
 
 # Stop app if file missing
 def require_file(path: str):
@@ -33,10 +24,7 @@ def require_file(path: str):
 require_file(LOC_FILE)
 require_file(PRED_FILE)
 
-# ---------------------------------------------------------------
-# DATA LOADING FUNCTIONS
-# ---------------------------------------------------------------
-
+#data loading
 @st.cache_data
 def load_locations():
     """
@@ -136,11 +124,7 @@ def load_predicted_vectors():
 locations = load_locations()
 vec_long, persons_pred = load_predicted_vectors()
 
-# If real data exists, we will load later in Part 2
-
-# ---------------------------------------------------------------
-# SIDEBAR FILTERS
-# ---------------------------------------------------------------
+# Side-Bar filters
 
 st.sidebar.title("Filters")
 
@@ -159,9 +143,7 @@ selected_sensors = st.sidebar.multiselect("Select Sensors", sensor_list, default
 # Tabs
 tab1, tab2 = st.tabs([" Time Series", " Vector Map"])
 
-# ---------------------------------------------------------------
-# TAB 1:  TIME SERIES
-# ---------------------------------------------------------------
+# Time Series Tab
 
 with tab1:
     st.header("Crowd Time Series")
@@ -193,7 +175,7 @@ with tab1:
             st.plotly_chart(fig, use_container_width=True)
 
         else:
-            # WIDE FORMAT → convert to LONG
+            
             tcol = next((c for c in real_df.columns if "time" in c.lower() or "date" in c.lower()), real_df.columns[0])
             real_df["timestamp"] = pd.to_datetime(real_df[tcol], errors="coerce")
             value_cols = [c for c in real_df.columns if c not in ["timestamp", tcol]]
@@ -217,13 +199,11 @@ with tab1:
 
 
 
-# ---------------------------------------------------------------
-# TAB 2:  VECTOR MAP (length ∝ value, arrowheads, warnings + P90)
-# ---------------------------------------------------------------
+# Vector map tab
 with tab2:
     st.header("Crowd Movement Vector Map")
 
-    # --- controls ---
+    # controls
     colA, colB, colC, colD = st.columns(4)
     with colA:
         scale = st.slider("Arrow Length Scale", 1, 20, 5, help="Multiplies arrow length (bigger = longer)")
@@ -263,7 +243,7 @@ with tab2:
             warn_threshold = thr
             st.session_state.warn_threshold = thr
 
-    # --- filter data by date and (optionally) sensors ---
+    # filter data by date and sensors
     vec_day = vec_long[vec_long["timestamp"].dt.date == date_sel]
     if selected_sensors:
         vec_day = vec_day[vec_day["Objectnummer"].isin(selected_sensors)]
@@ -289,7 +269,7 @@ with tab2:
         st.warning("No matching sensor locations for this selection.")
         st.stop()
 
-    # ---- totals per sensor at this time (for warning + labels) ----
+    # totals per sensor at this time (for warning + labels)
     totals = merged.groupby("Objectnummer", as_index=False)["value"].sum().rename(columns={"value":"Persons"})
     over = totals[totals["Persons"] >= warn_threshold]
     if not over.empty:
@@ -302,9 +282,7 @@ with tab2:
     # merge totals back for convenient access
     merged = merged.merge(totals, on="Objectnummer", how="left")
 
-    # ---- geometry: arrow length ∝ value, with arrowheads ----
-    # 0° = north (up). Use cos for northing (dy), sin for easting (dx).
-    # Length units = scale * value; then convert to map "degrees" with DEG_FACTOR.
+    
     merged["dx_units"] = scale * merged["value"] * np.sin(np.radians(merged["angle_deg"]))
     merged["dy_units"] = scale * merged["value"] * np.cos(np.radians(merged["angle_deg"]))
 
@@ -330,7 +308,7 @@ with tab2:
     merged["hx2_deg"] = hx2 * HEAD_FRACTION
     merged["hy2_deg"] = hy2 * HEAD_FRACTION
 
-    # ---- draw map ----
+    # draw map
     fig = go.Figure()
 
     # base sensors
@@ -376,7 +354,7 @@ with tab2:
             showlegend=False
         ))
 
-    # optional value labels at tip
+    # value labels at tip
     if show_values:
         fig.add_trace(go.Scattermapbox(
             lat=merged["lat_end"],
