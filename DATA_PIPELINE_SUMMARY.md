@@ -1,7 +1,6 @@
 # Data Pipeline - Implementation Summary
 
-## 📁 Files Created
-
+##  Files Created
 ### 1. `data_pipeline/data_pipeline.py` (Standalone Script)
 - Complete Python script that runs independently
 - Processes all data sources and creates `processed_data.csv`
@@ -17,8 +16,7 @@
 - Comprehensive documentation
 - Includes troubleshooting, configuration, and examples
 - **Use this for**: Reference and understanding the pipeline
-
-## 🎯 How to Use
+## How to Use
 
 ### Option A: For Project Template Notebook
 
@@ -33,7 +31,7 @@
 2. Run: `python data_pipeline/data_pipeline.py`
 3. Use generated `processed_data.csv` in your analysis
 
-## 📊 What the Pipeline Does
+## What the Pipeline Does
 
 ### Input (4 Data Sources)
 1. **Sensor data**: `sensordata_SAIL2025.csv` (3-min intervals)
@@ -57,7 +55,7 @@
 - **Targets**: 74 sensor measurements (directional flow)
 - **Split**: Training (Aug 20-23) + Test (Aug 24)
 
-## 🔑 Key Features
+##  Key Features
 
 ### 1. Haversine Distance Calculation
 Accurate great-circle distance between vessels and sensors on Earth's surface.
@@ -71,7 +69,7 @@ Larger vessels (>100m) attract more spectators.
 ### 4. Normalized Flow Measurements
 Sensor values divided by effective width: `(people/meter)/minute`
 
-## 📈 Integration with Models
+## Integration with Models
 
 After running the pipeline, you have `agg_df` with:
 
@@ -88,11 +86,11 @@ SPLIT_TIME = pd.Timestamp("2025-08-24 00:00:00+02:00")
 ```
 
 Ready for:
-- ✅ Ridge Regression
-- ✅ XGBoost
-- ✅ Any other ML model
+- Ridge Regression
+- XGBoost
+- Any other ML model
 
-## 📝 Section 4 Description for Project Template
+##  Section 4 Description for Project Template
 
 You can use this text for Section 4:
 
@@ -152,42 +150,33 @@ The final dataset contains:
 The processed data is now ready for machine learning model training.
 ```
 
-## 🚀 Next Steps
+## Next Steps
 
-1. ✅ **Data Pipeline** (Complete - You are here!)
-2. ⏩ **Section 5: Ridge Regression Model**
+1.  **Data Pipeline** (Complete - You are here!)
+2.  **Section 5: Ridge Regression Model**
    - Train baseline linear model
    - Feature importance analysis
    - Performance metrics
-3. ⏩ **Section 6: XGBoost Model**
+3.  **Section 6: XGBoost Model**
    - Train gradient boosting model
    - Hyperparameter tuning
    - Feature importance
-4. ⏩ **Section 7: Model Comparison**
+4.  **Section 7: Model Comparison**
    - Compare RMSE, MAE
    - Prediction vs actual plots
    - Select best model
 
-## 💡 Tips
+## Tips
 
 - **Runtime**: Pipeline takes 2-5 minutes to process all data
 - **Memory**: Keep ~2GB RAM available
 - **Reusability**: Save `agg_df` or `processed_data.csv` for quick reloading
 - **Debugging**: Each step prints progress and shapes
 
-## 📚 Documentation Files
+## Documentation Files
 
 - `data_pipeline/README.md` - Overview of data sources
 - `data_pipeline/USAGE.md` - Detailed usage guide
 - `data_pipeline/data_pipeline.py` - Standalone script
 - `data_pipeline_notebook_cells.txt` - Notebook version
 - `data_descriptions.md` - Data source descriptions
-
-## ✅ Ready to Go!
-
-Your data pipeline is complete and ready to use. Choose your preferred method:
-- **Notebook**: Copy cells from `data_pipeline_notebook_cells.txt`
-- **Script**: Run `python data_pipeline/data_pipeline.py`
-
-Both methods produce the same result. The notebook version is better for 
-learning and visualization, while the script is faster for automation.
